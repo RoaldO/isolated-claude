@@ -1,6 +1,6 @@
 services:
   claude:
-    image: ghcr.io/roald-d/isolated-claude:latest
+    image: ghcr.io/roaldo/isolated-claude:latest
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -13,10 +13,26 @@ services:
       NODE_OPTIONS: "--max-old-space-size=4096"
       CLAUDE_CONFIG_DIR: /home/node/.claude
     user: node
-    command: >
-      bash -c "sudo /usr/local/bin/init-firewall.sh && claude"
     stdin_open: true
     tty: true
+
+  agent:
+    image: ghcr.io/roaldo/isolated-claude:latest
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - isolated-claude-config:/home/node/.claude
+      - isolated-claude-history:/commandhistory
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      CLAUDE_CONFIG_DIR: /home/node/.claude
+      PROMPT: ""
+    user: node
+    command: >
+      bash -c 'claude -p "$PROMPT" --output-format json'
 
 volumes:
   isolated-claude-config:

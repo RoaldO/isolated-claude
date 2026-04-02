@@ -25,11 +25,21 @@ Je projectbestanden zijn gewoon zichtbaar en bewerkbaar vanuit je eigen editor o
 
 ## Gebruik
 
+### Interactief
+
 ```bash
 docker compose run claude
 ```
 
 Claude start op in de container. Jij praat met Claude via de terminal. Intussen kun je bestanden gewoon openen en bekijken in je eigen editor.
+
+### Als agent (niet-interactief)
+
+```bash
+PROMPT="schrijf unit tests voor src/auth.ts" docker compose run --rm agent
+```
+
+Output is JSON — geschikt voor gebruik vanuit scripts of andere geautomatiseerde workflows. De container start, voert de taak uit en stopt.
 
 ## Wat Claude automatisch mag (zonder te vragen)
 
