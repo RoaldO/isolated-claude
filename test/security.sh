@@ -227,6 +227,165 @@ fi
 rm -f "$TMPLINK"
 
 echo ""
+echo "=== Kernel escape vectors ==="
+
+# core_pattern escape: als schrijfbaar, wordt payload als root op HOST uitgevoerd bij crash
+if echo "|/tmp/pwned" > /proc/sys/kernel/core_pattern 2>/dev/null; then
+    fail "/proc/sys/kernel/core_pattern schrijfbaar — kernel escape mogelijk!"
+    # Herstel
+    echo "core" > /proc/sys/kernel/core_pattern 2>/dev/null || true
+else
+    pass "/proc/sys/kernel/core_pattern niet schrijfbaar"
+fi
+
+# modprobe path: als schrijfbaar, wordt eigen binary als root uitgevoerd bij module load
+if echo "/tmp/pwned" > /proc/sys/kernel/modprobe 2>/dev/null; then
+    fail "/proc/sys/kernel/modprobe schrijfbaar — kernel module escape mogelijk!"
+else
+    pass "/proc/sys/kernel/modprobe niet schrijfbaar"
+fi
+
+# kcore: directe toegang tot kernel memory
+assert_blocked \
+    "/proc/kcore niet leesbaar (kernel memory)" \
+    "dd if=/proc/kcore bs=1 count=1 2>/dev/null | wc -c | grep -q '^1$'"
+
+echo ""
+echo "=== Cgroup escape ==="
+
+# Klassieke cgroup v1 release_agent escape
+# Werkt als: cgroup v1 actief + /sys/fs/cgroup schrijfbaar + container niet in eigen cgroup ns
+CGROUP_ESCAPE=false
+if [[ -w /sys/fs/cgroup ]]; then
+    fail "/sys/fs/cgroup is schrijfbaar — cgroup v1 release_agent escape mogelijk!"
+    CGROUP_ESCAPE=true
+else
+    pass "/sys/fs/cgroup niet schrijfbaar"
+fi
+
+# Check of we een nieuwe cgroup kunnen aanmaken
+if mkdir /sys/fs/cgroup/memory/test-escape-$$ 2>/dev/null; then
+    fail "Nieuwe cgroup aanmaken gelukt — release_agent escape mogelijk!"
+    rmdir /sys/fs/cgroup/memory/test-escape-$$ 2>/dev/null || true
+else
+    pass "Nieuwe cgroup aanmaken geblokkeerd"
+fi
+
+# Check of we de release_agent van een bestaande cgroup kunnen aanpassen
+if echo "/tmp/pwned" > /sys/fs/cgroup/release_agent 2>/dev/null; then
+    fail "/sys/fs/cgroup/release_agent schrijfbaar!"
+else
+    pass "/sys/fs/cgroup/release_agent niet schrijfbaar"
+fi
+
+echo ""
+echo "=== SUID binaries ==="
+
+# Onverwachte SUID binaries kunnen escalatie naar root binnen container mogelijk maken
+SUID_BINS=$(find / -xdev -perm -4000 2>/dev/null | grep -v "^/proc" | sort)
+EXPECTED_SUID="^(/usr/bin/su|/usr/bin/sudo|/usr/bin/newgrp|/usr/bin/gpasswd|/usr/bin/chfn|/usr/bin/chsh|/usr/bin/passwd|/usr/bin/mount|/usr/bin/umount|/bin/su|/bin/mount|/bin/umount|/usr/lib/openssh/ssh-keysign)$"
+
+UNEXPECTED=()
+while IFS= read -r bin; do
+    if [[ -n "$bin" ]] && ! echo "$bin" | grep -qE "$EXPECTED_SUID"; then
+        UNEXPECTED+=("$bin")
+    fi
+done <<< "$SUID_BINS"
+
+if [[ ${#UNEXPECTED[@]} -gt 0 ]]; then
+    fail "Onverwachte SUID binaries gevonden: ${UNEXPECTED[*]}"
+else
+    pass "Geen onverwachte SUID binaries"
+fi
+
+echo ""
+echo "=== Device toegang ==="
+
+# Disk devices geven directe toegang tot host filesystem
+DISK_DEVS=$(find /dev -name 'sd*' -o -name 'nvme*' -o -name 'vd*' -o -name 'xvd*' 2>/dev/null | head -5)
+if [[ -n "$DISK_DEVS" ]]; then
+    READABLE=false
+    for dev in $DISK_DEVS; do
+        if dd if="$dev" bs=512 count=1 >/dev/null 2>&1; then
+            fail "Disk device $dev leesbaar — host filesystem toegankelijk!"
+            READABLE=true
+        fi
+    done
+    if [[ "$READABLE" == false ]]; then
+        pass "Disk devices aanwezig maar niet leesbaar"
+    fi
+else
+    pass "Geen disk devices in /dev"
+fi
+
+# /dev/mem: directe toegang tot fysiek geheugen
+assert_blocked \
+    "/dev/mem niet leesbaar (fysiek geheugen)" \
+    "dd if=/dev/mem bs=1 count=1 2>/dev/null | wc -c | grep -q '^1$'"
+
+echo ""
+echo "=== Namespace manipulatie ==="
+
+# nsenter: kunnen we een andere namespace betreden?
+if nsenter --pid=/proc/1/ns/pid -- echo ok >/dev/null 2>&1; then
+    fail "nsenter naar PID namespace van PID 1 gelukt — namespace escape mogelijk!"
+else
+    pass "nsenter geblokkeerd"
+fi
+
+# unshare: nieuwe namespace aanmaken (vereist CAP_SYS_ADMIN)
+if unshare --user --pid echo ok >/dev/null 2>&1; then
+    fail "unshare gelukt — namespace manipulatie mogelijk"
+else
+    pass "unshare geblokkeerd"
+fi
+
+echo ""
+echo "=== Data exfiltratie via toegestane kanalen ==="
+
+# DNS exfiltratie: data meesturen in DNS queries — DNS is toegestaan door firewall
+# Test: kunnen we een query doen naar een extern domein (eigen nameserver)?
+# In de praktijk: exfil via labels zoals "geheim-data.attacker.com"
+# We testen of willekeurige DNS queries naar externe resolvers mogelijk zijn
+if dig +short +time=3 test.exfil-check.invalid @8.8.8.8 >/dev/null 2>&1; then
+    fail "DNS queries naar externe resolvers (8.8.8.8) mogelijk — DNS exfiltratie risico"
+else
+    pass "DNS queries naar externe resolvers geblokkeerd (alleen Docker interne DNS)"
+fi
+
+# ICMP exfiltratie via allowed hosts (ping met data in payload)
+# De firewall staat SSH toe op port 22 — kunnen we daarmee willekeurige hosts bereiken?
+if timeout 3 bash -c "echo test > /dev/tcp/93.184.216.34/22" 2>/dev/null; then
+    fail "TCP/22 naar geblokkeerd IP (example.com) mogelijk — firewall lek op poort 22"
+else
+    pass "TCP/22 naar geblokkeerd IP geblokkeerd"
+fi
+
+echo ""
+echo "=== Procfs: extra checks ==="
+
+# /proc/1/fd: toegang tot open file descriptors van PID 1
+# PID 1 draait als 'node' (zelfde user als de agent), dus toegang is verwacht gedrag.
+# Zou een probleem zijn als PID 1 als root draait.
+pid1_user=$(stat -c '%U' /proc/1 2>/dev/null || echo "unknown")
+if ls /proc/1/fd >/dev/null 2>&1; then
+    if [[ "$pid1_user" == "root" ]]; then
+        fail "/proc/1/fd leesbaar en PID 1 draait als root — file descriptors van root zichtbaar"
+    else
+        pass "/proc/1/fd leesbaar maar PID 1 draait als '$pid1_user' (zelfde user, geen escalatie)"
+    fi
+else
+    pass "/proc/1/fd niet toegankelijk"
+fi
+
+# /proc/1/maps: memory map van PID 1 (kan library-locaties onthullen)
+if cat /proc/1/maps >/dev/null 2>&1; then
+    echo "  WARN  /proc/1/maps leesbaar (memory layout van PID 1 zichtbaar)"
+else
+    pass "/proc/1/maps niet leesbaar"
+fi
+
+echo ""
 echo "=== Bekende beperkingen (informatief) ==="
 
 # /proc/1/environ leesbaar — geen fix mogelijk zonder AppArmor/seccomp,
