@@ -97,6 +97,26 @@ else
 fi
 
 echo ""
+echo "=== Firewall: bypass pogingen ==="
+
+assert_blocked \
+    "iptables aanpassen als node user" \
+    "iptables -F"
+
+assert_blocked \
+    "sudo iptables (niet in sudoers)" \
+    "sudo iptables -A OUTPUT -j ACCEPT"
+
+assert_blocked \
+    "ipset aanpassen als node user" \
+    "ipset add allowed-domains 93.184.216.34"
+
+# Controleer dat example.com na bypass-pogingen nog steeds geblokkeerd is
+assert_blocked \
+    "example.com nog steeds geblokkeerd na bypass-pogingen" \
+    "curl --connect-timeout 5 https://example.com"
+
+echo ""
 echo "=== Claude Code permissies (settings.json) ==="
 
 SETTINGS="/workspace/.claude/settings.json"
