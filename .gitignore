@@ -1,0 +1,33 @@
+# Secrets & credentials
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*_rsa
+*_ed25519
+*_ecdsa
+id_rsa*
+id_ed25519*
+credentials
+secrets/
+.secrets/
+
+# Claude credentials
+.claude_credentials
+.anthropic/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+*.log
