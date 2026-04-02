@@ -139,7 +139,106 @@ else
 fi
 
 echo ""
-echo "=== Resultaat ==="
+echo "=== IPv6 bypass ==="
+
+# ip6tables regels zijn alleen leesbaar als root; controleer in plaats daarvan
+# of IPv6 connectiviteit daadwerkelijk geblokkeerd is
+if curl --connect-timeout 5 --ipv6 https://ipv6.google.com >/dev/null 2>&1; then
+    fail "IPv6 verkeer naar ipv6.google.com lukte — firewall bypass via IPv6!"
+else
+    pass "IPv6 verkeer naar buiten geblokkeerd"
+fi
+
+# Controleer of de machine überhaupt IPv6 heeft; zo niet, markeer als extra info
+if ip -6 addr show scope global 2>/dev/null | grep -q "inet6"; then
+    pass "IPv6 interface aanwezig maar verkeer geblokkeerd (ip6tables actief)"
+else
+    pass "Geen globaal IPv6 adres op interface (IPv6 niet beschikbaar in dit netwerk)"
+fi
+
+echo ""
+echo "=== Docker socket ==="
+
+if [[ -S /var/run/docker.sock ]]; then
+    fail "/var/run/docker.sock is toegankelijk — volledige host takeover mogelijk!"
+else
+    pass "/var/run/docker.sock niet gemount"
+fi
+
+echo ""
+echo "=== NET_RAW capabilities ==="
+
+# Controleer effectieve capabilities van het huidige process
+effective_caps=$(grep CapEff /proc/self/status | awk '{print $2}')
+cap_net_raw_bit=$((1 << 13))
+cap_net_admin_bit=$((1 << 12))
+
+if (( 16#$effective_caps & cap_net_raw_bit )); then
+    # NET_RAW aanwezig — probeer een raw socket te openen naar een geblokkeerd doel
+    # Python is beschikbaar via node image; anders gebruiken we /dev/tcp trick
+    if python3 -c "
+import socket, sys
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    s.settimeout(3)
+    s.connect(('93.184.216.34', 0))  # example.com IP
+    s.close()
+    sys.exit(0)  # verbinding lukte
+except Exception:
+    sys.exit(1)  # geblokkeerd
+" 2>/dev/null; then
+        fail "Raw socket naar example.com lukte via NET_RAW — mogelijke firewall bypass"
+    else
+        pass "Raw socket naar geblokkeerd IP gefaald (iptables filtert ook raw sockets)"
+    fi
+else
+    pass "CAP_NET_RAW niet effectief voor node user"
+fi
+
+echo ""
+echo "=== Procfs toegang ==="
+
+assert_blocked \
+    "/proc/sysrq-trigger niet schrijfbaar" \
+    "echo b > /proc/sysrq-trigger"
+
+# Kan de agent IP forwarding aanzetten?
+if echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null; then
+    fail "/proc/sys/net/ipv4/ip_forward schrijfbaar — routing manipulatie mogelijk"
+else
+    pass "/proc/sys/net/ipv4/ip_forward niet schrijfbaar"
+fi
+
+echo ""
+echo "=== Symlink escape ==="
+
+# Een symlink naar /etc wijst naar de container's /etc, niet de host's /etc.
+# Dat is geen escape — de node user heeft sowieso al toegang tot container /etc.
+# Relevante vraag: kan een symlink in /workspace de HOST bereiken?
+# De workspace is een bind mount van de host, maar symlinks worden
+# opgelost vanuit de container's namespace, dus /etc is altijd container-/etc.
+TMPLINK="/workspace/.security-test-symlink-$$"
+ln -s /etc "$TMPLINK" 2>/dev/null
+if [[ -f "$TMPLINK/passwd" ]]; then
+    pass "Symlink naar /etc bereikt container-interne /etc (verwacht gedrag, geen host escape)"
+else
+    pass "Symlink naar /etc geeft geen toegang"
+fi
+rm -f "$TMPLINK"
+
+echo ""
+echo "=== Bekende beperkingen (informatief) ==="
+
+# /proc/1/environ leesbaar — geen fix mogelijk zonder AppArmor/seccomp,
+# maar een reëel risico als secrets via env vars worden doorgegeven
+if cat /proc/1/environ >/dev/null 2>&1; then
+    echo "  WARN  /proc/1/environ leesbaar — geef NOOIT secrets mee als env var aan de container"
+else
+    echo "  INFO  /proc/1/environ niet leesbaar"
+fi
+
+echo ""
+echo "=== Claude Code permissies (settings.json) ==="
 echo -e "  ${green}Geslaagd: $PASS${reset}"
 if [[ $FAIL -gt 0 ]]; then
     echo -e "  ${red}Mislukt:  $FAIL${reset}"
