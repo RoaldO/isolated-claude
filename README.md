@@ -85,6 +85,25 @@ Al het overige netwerkverkeer wordt geblokkeerd.
 
 > De container beschermt je host, maar kan geen exfiltratie voorkomen van data *binnen* de container (zoals credentials die je in de workspace hebt staan). Gebruik dit alleen met vertrouwde repositories.
 
+## Python projecten (uv)
+
+De image bevat `uv` maar installeert geen specifieke Python versie — dat is project-specifieke data, niet image-data.
+
+**Eerste gebruik:**
+```bash
+docker compose run claude
+# Eenmalig, binnen de container:
+uv python install 3.14
+```
+
+Python wordt opgeslagen in het `uv-python` volume en is bij elke volgende containerstart direct beschikbaar — je hoeft dit maar één keer te doen.
+
+Daarna werk je gewoon met uv zoals normaal:
+```bash
+uv sync
+uv run pytest
+```
+
 ## Security testen
 
 ```bash

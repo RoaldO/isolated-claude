@@ -78,6 +78,12 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
+# Install uv (Python package/version manager)
+# De uv binary wordt gekopieerd uit de officiële uv image — geen curl of shell scripts.
+# Python versies worden NIET in de image geïnstalleerd; projecten doen dat zelf via
+# `uv python install <versie>`. Die installaties worden gecached in het uv-python volume.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
 # Install Claude Code
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 

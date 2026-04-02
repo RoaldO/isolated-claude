@@ -10,6 +10,7 @@ x-base: &base
   volumes:
     - isolated-claude-config:/home/node/.claude
     - isolated-claude-history:/commandhistory
+    - uv-python:/home/node/.local/share/uv
     - .:/workspace
   working_dir: /workspace
   environment:
@@ -39,3 +40,4 @@ services:
 volumes:
   isolated-claude-config:
   isolated-claude-history:
+  uv-python:
