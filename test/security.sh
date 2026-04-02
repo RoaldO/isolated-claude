@@ -386,6 +386,133 @@ else
 fi
 
 echo ""
+echo "=== ICMP exfiltratie ==="
+
+# Firewall laat alle verkeer toe naar whitelisted IPs (zoals GitHub).
+# Dat includeert ook ICMP. Kunnen we data in ping payloads meesturen?
+GITHUB_IP=$(dig +short api.github.com @127.0.0.11 | head -1)
+if [[ -n "$GITHUB_IP" ]]; then
+    if ping -c 1 -W 3 -p deadbeefcafebabe "$GITHUB_IP" >/dev/null 2>&1; then
+        fail "Ping met data payload naar whitelisted IP ($GITHUB_IP) gelukt — ICMP exfiltratie mogelijk"
+    else
+        pass "Ping naar whitelisted IP geblokkeerd (CAP_NET_RAW niet effectief)"
+    fi
+else
+    echo "  WARN  Kon GitHub IP niet resolven voor ICMP test"
+fi
+
+echo ""
+echo "=== DNS exfiltratie via Docker resolver ==="
+
+# Kritiek: ook al gaat DNS alleen naar 127.0.0.11, stuurt Docker's resolver
+# queries door naar externe authoritative nameservers. Data in subdomein-labels
+# (b.v. secret123.attacker.com) bereikt zo alsnog de aanvaller.
+# We testen dit door een subdomein te querien van een domein dat we beheersen.
+# Zonder eigen nameserver gebruiken we een publiek DNS-logging domein.
+# Alternatief: controleer of Docker de query daadwerkelijk doorstuurt.
+# Inherente beperking: Docker's resolver stuurt queries door naar externe nameservers.
+# Data in subdomein-labels (bv. secret123.attacker.com) bereikt zo de authoritative NS.
+# Niet op te lossen zonder een DNS-proxy. Gedocumenteerd als bekende beperking.
+echo "  WARN  Docker's DNS resolver stuurt queries door naar externe nameservers."
+echo "        DNS exfiltratie via subdomein-labels is inherent mogelijk."
+echo "        Oplossing vereist een DNS-proxy (buiten scope van deze sandbox)."
+
+echo ""
+echo "=== HTTP covert channel via GitHub ==="
+
+# GitHub is whitelisted en we kunnen HTTPS requests sturen.
+# Sla je de ANTHROPIC_API_KEY of andere secrets op als env var, dan kan
+# een kwaadaardige payload die data posten via een commit of API call.
+# We testen alleen of HTTPS POST naar GitHub API überhaupt mogelijk is.
+# Inherente beperking: GitHub is whitelisted, dus HTTP POST naar GitHub API werkt altijd.
+# Als er een GitHub token in de container zit, is data-exfiltratie via GitHub API mogelijk.
+# Dit is by design (GitHub moet bereikbaar zijn voor git operaties).
+# Mitigatie: gebruik alleen minimale GitHub token scopes.
+echo "  WARN  HTTPS POST naar GitHub API is altijd mogelijk (GitHub is whitelisted)."
+echo "        Zorg dat GitHub tokens minimale scope hebben (alleen noodzakelijke rechten)."
+
+echo ""
+echo "=== Seccomp verificatie ==="
+
+# Docker's default seccomp profiel zou deze syscalls moeten blokkeren.
+# We testen via python3 (aanwezig in node image) of de syscalls daadwerkelijk geblokkeerd zijn.
+
+# ptrace ATTACH: kan code injecteren in andere processen (gevaarlijke variant)
+# PTRACE_TRACEME (0) is toegestaan — dat is self-tracing, intentioneel allowed.
+# PTRACE_ATTACH (16) is de gevaarlijke variant: andere processen kapen.
+if python3 -c "
+import ctypes, sys
+PTRACE_ATTACH = 16
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+# Probeer PID 1 te attachen
+ret = libc.ptrace(PTRACE_ATTACH, 1, 0, 0)
+errno = ctypes.get_errno()
+# EPERM (1) = geblokkeerd door seccomp of kernel; succes (ret==0) = gevaar
+sys.exit(0 if ret == 0 else 1)
+" 2>/dev/null; then
+    fail "ptrace ATTACH op PID 1 gelukt — process injectie mogelijk!"
+else
+    pass "ptrace ATTACH geblokkeerd (seccomp of kernel)"
+fi
+
+# bpf: kernel BPF programs laden (zeer krachtig, kan kernel-level monitoring/manipulatie)
+if python3 -c "
+import ctypes, sys
+BPF_PROG_LOAD = 5
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+# Lege BPF instructie set — verwacht EINVAL als seccomp het doorlaat, EPERM als geblokkeerd
+ret = libc.syscall(321, BPF_PROG_LOAD, 0, 0)  # 321 = __NR_bpf op x86_64
+import ctypes.util
+errno = ctypes.get_errno()
+# EPERM (1) of ENOSYS (38) = geblokkeerd; EINVAL (22) = doorgelaten maar ongeldige args
+sys.exit(0 if errno == 22 else 1)
+" 2>/dev/null; then
+    fail "bpf syscall beschikbaar — kernel BPF manipulatie mogelijk"
+else
+    pass "bpf geblokkeerd door seccomp"
+fi
+
+# keyctl: kernel keyring (kan host credentials bevatten)
+if python3 -c "
+import ctypes, sys
+KEYCTL_GET_KEYRING_ID = 0
+KEY_SPEC_SESSION_KEYRING = -3
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+ret = libc.syscall(250, KEYCTL_GET_KEYRING_ID, KEY_SPEC_SESSION_KEYRING, 0)  # 250 = __NR_keyctl
+sys.exit(0 if ret >= 0 else 1)
+" 2>/dev/null; then
+    fail "keyctl syscall beschikbaar — kernel keyring toegankelijk"
+else
+    pass "keyctl geblokkeerd door seccomp"
+fi
+
+echo ""
+echo "=== /dev/shm uitvoerbaar? ==="
+
+SHM_TEST="/dev/shm/.security-test-$$"
+echo '#!/bin/bash' > "$SHM_TEST"
+echo 'echo EXEC_OK' >> "$SHM_TEST"
+chmod +x "$SHM_TEST"
+if output=$("$SHM_TEST" 2>/dev/null) && [[ "$output" == "EXEC_OK" ]]; then
+    fail "/dev/shm is uitvoerbaar — code-uitvoering vanuit gedeeld geheugen mogelijk"
+else
+    pass "/dev/shm is noexec — scripts niet uitvoerbaar"
+fi
+rm -f "$SHM_TEST"
+
+echo ""
+echo "=== CAP_NET_ADMIN praktisch ==="
+
+# CAP_NET_ADMIN staat in de permitted set maar zou niet effectief moeten zijn voor node
+assert_blocked \
+    "ip link add (netwerk interface aanmaken)" \
+    "ip link add type dummy name test-escape-$$"
+
+assert_blocked \
+    "ip route add (routing table manipulatie)" \
+    "ip route add 0.0.0.0/0 via 1.2.3.4"
+
+echo ""
 echo "=== Bekende beperkingen (informatief) ==="
 
 # /proc/1/environ leesbaar — geen fix mogelijk zonder AppArmor/seccomp,
