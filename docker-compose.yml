@@ -1,46 +1,40 @@
+x-base: &base
+  build:
+    context: .devcontainer
+    dockerfile: Dockerfile
+    args:
+      TZ: "Europe/Amsterdam"
+  cap_add:
+    - NET_ADMIN
+    - NET_RAW
+  volumes:
+    - isolated-claude-config:/home/node/.claude
+    - isolated-claude-history:/commandhistory
+    - .:/workspace
+  working_dir: /workspace
+  environment:
+    NODE_OPTIONS: "--max-old-space-size=4096"
+    CLAUDE_CONFIG_DIR: /home/node/.claude
+  user: node
+
 services:
   claude:
-    build:
-      context: .devcontainer
-      dockerfile: Dockerfile
-      args:
-        TZ: "Europe/Amsterdam"
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    volumes:
-      - isolated-claude-config:/home/node/.claude
-      - isolated-claude-history:/commandhistory
-      - .:/workspace
-    working_dir: /workspace
-    environment:
-      NODE_OPTIONS: "--max-old-space-size=4096"
-      CLAUDE_CONFIG_DIR: /home/node/.claude
-    user: node
+    <<: *base
     stdin_open: true
     tty: true
 
   agent:
-    build:
-      context: .devcontainer
-      dockerfile: Dockerfile
-      args:
-        TZ: "Europe/Amsterdam"
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    volumes:
-      - isolated-claude-config:/home/node/.claude
-      - isolated-claude-history:/commandhistory
-      - .:/workspace
-    working_dir: /workspace
+    <<: *base
     environment:
       NODE_OPTIONS: "--max-old-space-size=4096"
       CLAUDE_CONFIG_DIR: /home/node/.claude
       PROMPT: ""
-    user: node
     command: >
       bash -c 'claude -p "$PROMPT" --output-format json'
+
+  test:
+    <<: *base
+    command: bash test/security.sh
 
 volumes:
   isolated-claude-config:

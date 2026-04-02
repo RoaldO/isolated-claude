@@ -85,6 +85,18 @@ Al het overige netwerkverkeer wordt geblokkeerd.
 
 > De container beschermt je host, maar kan geen exfiltratie voorkomen van data *binnen* de container (zoals credentials die je in de workspace hebt staan). Gebruik dit alleen met vertrouwde repositories.
 
+## Security testen
+
+```bash
+docker compose run --rm test
+```
+
+Verifieert:
+- Geblokkeerde domeinen zijn niet bereikbaar (example.com, google.com, etc.)
+- Toegestane domeinen werken (GitHub, npm, Anthropic API)
+- Host filesystem is niet toegankelijk vanuit de container
+- `settings.json` bevat de juiste deny-regels voor `git push` en `gh`
+
 ## Image zelf bouwen
 
 ```bash
